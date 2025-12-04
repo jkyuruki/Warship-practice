@@ -199,9 +199,9 @@
     let goldenPending = false;
 
     // Per-lane cooldown + hit flash + cooldown visibility
-    let laneCooldownUntil       = [0, 0, 0]; // logical cooldown end time
-    let laneCooldownVisibleUntil= [0, 0, 0]; // red shown only until this time
-    let laneHitFlashUntil       = [0, 0, 0]; // green flash time
+    let laneCooldownUntil        = [0, 0, 0]; // logical cooldown end time
+    let laneCooldownVisibleUntil = [0, 0, 0]; // red shown only until this time
+    let laneHitFlashUntil        = [0, 0, 0]; // green flash time
 
     // Next normal spawn timing
     let nextNormalSpawnTime = null; // in seconds
@@ -209,12 +209,22 @@
     // Timer bookkeeping
     let lastTime = 0;
 
-    function speedCurve(score) {
-        // Slightly faster starting speed + aggressive ramp + jitter
-        return 300 + Math.pow(score, 1.2) * 25 + (Math.random() - 0.5) * 40;
+    // NEW: time+score based speed curve
+    function speedCurve(nowSec, score) {
+        const elapsed = Math.max(0, Math.min(GAME_DURATION, nowSec - gameStartTime));
+        const t = elapsed / GAME_DURATION; // 0 → 1 over 30s
+
+        // Base ramps from ~360 px/s to ~780+ px/s over the game
+        const base = 360 + 420 * Math.pow(t, 1.6);
+
+        // Small skill-based bump (good players get a bit more speed)
+        const skillTerm = Math.min(score, 25) * 6; // up to +150
+
+        const jitter = (Math.random() - 0.5) * 40;
+        return base + skillTerm + jitter;
     }
 
-    function spawnNormalCircle() {
+    function spawnNormalCircle(nowSec) {
         let lane;
         do {
             lane = Math.floor(Math.random() * lanes);
@@ -222,7 +232,7 @@
 
         lastLane = lane;
 
-        const speed = speedCurve(score);
+        const speed = speedCurve(nowSec, score);
         const circle = {
             lane,
             x: lane * laneWidth() + laneWidth() / 2,
@@ -281,7 +291,7 @@
         lastTime = performance.now();
 
         // First normal circle appears immediately
-        spawnNormalCircle();
+        spawnNormalCircle(gameStartTime);
 
         requestAnimationFrame(loop);
     }
@@ -368,9 +378,7 @@
         }
 
         // 2) Apply cooldown for this attempt
-        laneCooldownUntil[lane] = nowSec + TAP_COOLDOWN;
-        // By default, this cooldown is visually red; if it turns into a hit,
-        // we'll cancel that red visibility in registerHit().
+        laneCooldownUntil[lane]        = nowSec + TAP_COOLDOWN;
         laneCooldownVisibleUntil[lane] = laneCooldownUntil[lane];
 
         // 3) Check for hittable circle in this lane
@@ -387,8 +395,7 @@
         if (hitCircle) {
             registerHit(hitCircle, lane, nowSec);
         }
-        // If there was no hittable circle, this was an early/late tap:
-        // cooldown (and red) still applies, but no miss and circles keep falling.
+        // If no hittable circle: early/late tap → cooldown only, no miss.
     }
 
     /* --- Input --- */
@@ -469,7 +476,7 @@
         // Spawn next normal circle after delay, if needed
         const hasNormal = circles.some(c => !c.isGolden);
         if (!hasNormal && nextNormalSpawnTime !== null && nowSec >= nextNormalSpawnTime && running) {
-            spawnNormalCircle();
+            spawnNormalCircle(nowSec);
             nextNormalSpawnTime = null;
         }
     }
