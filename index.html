@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Three Lane Tap Game (Endless)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+<style>
+    html, body {
+        margin: 0;
+        padding: 0;
+        background: #111;
+        color: #fff;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+        height: 100%;
+        overflow: hidden;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    #gameContainer {
+        position: relative;
+        width: min(420px, 100vw);
+        height: min(720px, 100vh);
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow: 0 0 20px rgba(0,0,0,0.7);
+        background: #000;
+    }
+
+    canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+        touch-action: none;
+    }
+
+    #hud {
+        position: absolute;
+        top: 8px;
+        left: 8px;
+        right: 8px;
+        display: flex;
+        justify-content: space-between;
+        font-size: 14px;
+        pointer-events: none;
+        text-shadow: 0 0 4px rgba(0,0,0,0.9);
+    }
+
+    #startScreen {
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(180deg, rgba(0,0,0,0.85), rgba(0,0,0,0.95));
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        padding: 24px;
+        box-sizing: border-box;
+    }
+
+    h1 {
+        margin: 0 0 12px;
+        font-size: 24px;
+        letter-spacing: 0.03em;
+    }
+
+    p {
+        margin: 6px 0;
+        font-size: 14px;
+        opacity: 0.8;
+    }
+
+    button {
+        margin-top: 16px;
+        padding: 10px 18px;
+        font-size: 15px;
+        font-weight: 600;
+        border-radius: 999px;
+        border: none;
+        cursor: pointer;
+        background: #26c6da;
+        color: #000;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.4);
+    }
+
+    button:active {
+        transform: translateY(1px);
+        box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+    }
+
+    .hint {
+        margin-top: 10px;
+        font-size: 12px;
+        opacity: 0.7;
+    }
+</style>
+</head>
+<body>
+<div id="gameContainer">
+    <canvas id="gameCanvas"></canvas>
+
+    <div id="hud">
+        <div>Score: <span id="scoreText">0</span></div>
+        <div>Misses: <span id="missText">0</span></div>
+    </div>
+
+    <div id="startScreen">
+        <h1>3-Lane Tap</h1>
+        <p>Endless mode — no lives, no game over.</p>
+        <p>Misses are tracked only for stats.</p>
+        <button id="startButton">Start</button>
+        <div class="hint">Mobile: tap a lane<br>Desktop: click or press A / S / D</div>
+    </div>
+</div>
+
+<script>
+(function () {
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    const hudScore = document.getElementById('scoreText');
+    const hudMiss  = document.getElementById('missText');
+    const startScreen = document.getElementById('startScreen');
+    const startButton = document.getElementById('startButton');
+
+    let width = 360;
+    let height = 640;
+
+    function resizeCanvas() {
+        width = 360;
+        height = 640;
+        canvas.width = width;
+        canvas.height = height;
+    }
+    resizeCanvas();
+    window.addEventListener('resize', resizeCanvas);
+
+    // --- Audio setup ---
+    let audioCtx = null;
+    function initAudio() {
+        if (!audioCtx) {
+            const AC = window.AudioContext || window.webkitAudioContext;
+            audioCtx = new AC();
+        }
+    }
+
+    function beep(freq, duration, type='sine', gain=0.25) {
+        if (!audioCtx) return;
+        const osc = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        osc.type = type;
+        osc.frequency.value = freq;
+        g.gain.setValueAtTime(gain, audioCtx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+        osc.connect(g).connect(audioCtx.destination);
+        osc.start();
+        osc.stop(audioCtx.currentTime + duration);
+    }
+
+    function hitSound() { beep(880, 0.05, 'square', 0.35); }
+    function missSound() { beep(220, 0.12, 'sawtooth', 0.4); }
+
+    // Game state
+    let running = false;
+    let score = 0;
+    let misses = 0;
+
+    const lanes = 3;
+    const laneWidth = () => width / lanes;
+    const zoneHeight = 120;
+    const zoneTop = () => height - zoneHeight;
+    const circleRadius = 26;
+    let lastLane = -1;
+
+    let currentCircle = null;
+
+    function speedCurve(score) {
+        return 260 + Math.pow(score, 1.2) * 25 + (Math.random() - 0.5) * 40;
+    }
+
+    function spawnCircle() {
+        let lane;
+        do {
+            lane = Math.floor(Math.random() * lanes);
+        } while (lane === lastLane);
+
+        lastLane = lane;
+
+        currentCircle = {
+            lane,
+            x: lane * laneWidth() + laneWidth() / 2,
+            y: -circleRadius * 1.5,
+            vy: speedCurve(score)
+        };
+    }
+
+    function startGame() {
+        initAudio();
+        score = 0;
+        misses = 0;
+        hudScore.textContent = score;
+        hudMiss.textContent = misses;
+
+        startScreen.style.display = 'none';
+        running = true;
+        spawnCircle();
+        lastTime = performance.now();
+        requestAnimationFrame(loop);
+    }
+
+    function registerHit() {
+        score++;
+        hudScore.textContent = score;
+        hitSound();
+        spawnCircle();
+    }
+
+    function registerMiss() {
+        misses++;
+        hudMiss.textContent = misses;
+        missSound();
+        spawnCircle();
+    }
+
+    function handleLaneTap(lane) {
+        if (!running || !currentCircle) return;
+        if (lane !== currentCircle.lane) return registerMiss();
+
+        const top = zoneTop() + 10;
+        const bottom = height - 10;
+
+        if (currentCircle.y + circleRadius >= top &&
+            currentCircle.y - circleRadius <= bottom) {
+            return registerHit();
+        }
+
+        registerMiss();
+    }
+
+    function handleClick(event) {
+        initAudio();
+        const r = canvas.getBoundingClientRect();
+        const x = (event.clientX - r.left) * (width / r.width);
+        const y = (event.clientY - r.top) * (height / r.height);
+        if (y >= zoneTop() - 20) handleLaneTap(Math.floor(x / laneWidth()));
+    }
+
+    function handleTouch(event) {
+        initAudio();
+        const t = event.changedTouches[0];
+        const r = canvas.getBoundingClientRect();
+        const x = (t.clientX - r.left) * (width / r.width);
+        const y = (t.clientY - r.top) * (height / r.height);
+        if (y >= zoneTop() - 20) handleLaneTap(Math.floor(x / laneWidth()));
+        event.preventDefault();
+    }
+
+    function handleKey(event) {
+        initAudio();
+        if (!running) return;
+        if (event.key === 'a') handleLaneTap(0);
+        if (event.key === 's') handleLaneTap(1);
+        if (event.key === 'd') handleLaneTap(2);
+    }
+
+    canvas.addEventListener('mousedown', handleClick);
+    canvas.addEventListener('touchstart', handleTouch, { passive:false });
+    window.addEventListener('keydown', handleKey);
+    startButton.addEventListener('click', startGame);
+
+    let lastTime = 0;
+
+    function loop(ts) {
+        if (!running) return;
+        const dt = (ts - lastTime) / 1000;
+        lastTime = ts;
+
+        if (currentCircle) {
+            currentCircle.y += currentCircle.vy * dt;
+            if (currentCircle.y - circleRadius > height) registerMiss();
+        }
+
+        draw();
+        requestAnimationFrame(loop);
+    }
+
+    function draw() {
+        ctx.clearRect(0,0,width,height);
+
+        // Background
+        const grad = ctx.createLinearGradient(0,0,0,height);
+        grad.addColorStop(0,'#000');
+        grad.addColorStop(1,'#111');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0,0,width,height);
+
+        // Lane lines
+        ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+        ctx.lineWidth = 2;
+        for (let i=1;i<lanes;i++){
+            const x=i*laneWidth();
+            ctx.beginPath();
+            ctx.moveTo(x,0); ctx.lineTo(x,height); ctx.stroke();
+        }
+
+        // Hit zone
+        ctx.fillStyle='rgba(255,255,255,0.07)';
+        ctx.fillRect(0,zoneTop(),width,zoneHeight);
+
+        // Bottom guide bar
+        ctx.fillStyle='rgba(255,255,255,0.12)';
+        ctx.fillRect(0,height-18,width,18);
+
+        // Bottom lane boxes
+        ctx.strokeStyle='rgba(255,255,255,0.4)';
+        for (let i=0;i<lanes;i++){
+            ctx.strokeRect(i*laneWidth()+4, height-24, laneWidth()-8, 20);
+        }
+
+        // Circle
+        if (currentCircle) {
+            const colors=['#26c6da','#66bb6a','#ffca28'];
+            ctx.fillStyle = colors[currentCircle.lane];
+            ctx.beginPath();
+            ctx.arc(currentCircle.x, currentCircle.y, circleRadius, 0, Math.PI*2);
+            ctx.fill();
+            ctx.strokeStyle='rgba(0,0,0,0.5)';
+            ctx.lineWidth=3;
+            ctx.stroke();
+        }
+    }
+
+    draw();
+})();
+</script>
+</body>
+</html>
