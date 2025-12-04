@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>Three Lane Tap Game (Endless)</title>
+<title>Three Lane Tap Game (Endless Cooldown)</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
 <style>
     html, body {
@@ -108,8 +108,8 @@
 
     <div id="startScreen">
         <h1>3-Lane Tap</h1>
-        <p>Endless mode — no lives, no game over.</p>
-        <p>Misses are tracked only for stats.</p>
+        <p>Endless mode — miss only when the circle falls off the bottom.</p>
+        <p>Tapping too early does nothing, but each tap has a short cooldown.</p>
         <button id="startButton">Start</button>
         <div class="hint">Mobile: tap a lane<br>Desktop: click or press A / S / D</div>
     </div>
@@ -142,7 +142,9 @@
     function initAudio() {
         if (!audioCtx) {
             const AC = window.AudioContext || window.webkitAudioContext;
-            audioCtx = new AC();
+            if (AC) {
+                audioCtx = new AC();
+            }
         }
     }
 
@@ -151,7 +153,7 @@
         const osc = audioCtx.createOscillator();
         const g = audioCtx.createGain();
         osc.type = type;
-        osc.frequency.value = freq;
+        osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
         g.gain.setValueAtTime(gain, audioCtx.currentTime);
         g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
         osc.connect(g).connect(audioCtx.destination);
@@ -159,7 +161,7 @@
         osc.stop(audioCtx.currentTime + duration);
     }
 
-    function hitSound() { beep(880, 0.05, 'square', 0.35); }
+    function hitSound()  { beep(880, 0.05, 'square', 0.35); }
     function missSound() { beep(220, 0.12, 'sawtooth', 0.4); }
 
     // Game state
@@ -176,7 +178,12 @@
 
     let currentCircle = null;
 
+    // Tap cooldown (seconds)
+    const TAP_COOLDOWN = 0.5;
+    let tapCooldownUntil = 0;
+
     function speedCurve(score) {
+        // aggressive ramp + small jitter
         return 260 + Math.pow(score, 1.2) * 25 + (Math.random() - 0.5) * 40;
     }
 
@@ -184,7 +191,7 @@
         let lane;
         do {
             lane = Math.floor(Math.random() * lanes);
-        } while (lane === lastLane);
+        } while (lane === lastLane && lanes > 1);
 
         lastLane = lane;
 
@@ -200,6 +207,7 @@
         initAudio();
         score = 0;
         misses = 0;
+        tapCooldownUntil = 0;
         hudScore.textContent = score;
         hudMiss.textContent = misses;
 
@@ -218,6 +226,7 @@
     }
 
     function registerMiss() {
+        // Only called when circle falls off the bottom
         misses++;
         hudMiss.textContent = misses;
         missSound();
@@ -226,17 +235,31 @@
 
     function handleLaneTap(lane) {
         if (!running || !currentCircle) return;
-        if (lane !== currentCircle.lane) return registerMiss();
+
+        const now = performance.now() / 1000;
+        if (now < tapCooldownUntil) {
+            // still on cooldown, ignore tap completely
+            return;
+        }
+        // start new cooldown
+        tapCooldownUntil = now + TAP_COOLDOWN;
+
+        // Only a hit if: correct lane AND within zone.
+        if (lane !== currentCircle.lane) {
+            // wrong lane: no miss, no despawn, just cooldown
+            return;
+        }
 
         const top = zoneTop() + 10;
         const bottom = height - 10;
 
         if (currentCircle.y + circleRadius >= top &&
             currentCircle.y - circleRadius <= bottom) {
-            return registerHit();
+            // valid hit
+            registerHit();
         }
-
-        registerMiss();
+        // else: tapped too early/late in the correct lane, but no penalty
+        // circle keeps falling
     }
 
     function handleClick(event) {
@@ -244,7 +267,10 @@
         const r = canvas.getBoundingClientRect();
         const x = (event.clientX - r.left) * (width / r.width);
         const y = (event.clientY - r.top) * (height / r.height);
-        if (y >= zoneTop() - 20) handleLaneTap(Math.floor(x / laneWidth()));
+        if (y >= zoneTop() - 20) {
+            const lane = Math.floor(x / laneWidth());
+            handleLaneTap(lane);
+        }
     }
 
     function handleTouch(event) {
@@ -253,16 +279,19 @@
         const r = canvas.getBoundingClientRect();
         const x = (t.clientX - r.left) * (width / r.width);
         const y = (t.clientY - r.top) * (height / r.height);
-        if (y >= zoneTop() - 20) handleLaneTap(Math.floor(x / laneWidth()));
+        if (y >= zoneTop() - 20) {
+            const lane = Math.floor(x / laneWidth());
+            handleLaneTap(lane);
+        }
         event.preventDefault();
     }
 
     function handleKey(event) {
-        initAudio();
         if (!running) return;
-        if (event.key === 'a') handleLaneTap(0);
-        if (event.key === 's') handleLaneTap(1);
-        if (event.key === 'd') handleLaneTap(2);
+        initAudio();
+        if (event.key === 'a' || event.key === 'A') handleLaneTap(0);
+        if (event.key === 's' || event.key === 'S') handleLaneTap(1);
+        if (event.key === 'd' || event.key === 'D') handleLaneTap(2);
     }
 
     canvas.addEventListener('mousedown', handleClick);
@@ -279,7 +308,10 @@
 
         if (currentCircle) {
             currentCircle.y += currentCircle.vy * dt;
-            if (currentCircle.y - circleRadius > height) registerMiss();
+            // Miss only when circle falls off bottom
+            if (currentCircle.y - circleRadius > height) {
+                registerMiss();
+            }
         }
 
         draw();
