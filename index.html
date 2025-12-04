@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>Three Lane Tap Game (Endless Cooldown)</title>
+<title>Three Lane Tap Game (Lane Cooldowns)</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
 <style>
     html, body {
@@ -109,7 +109,7 @@
     <div id="startScreen">
         <h1>3-Lane Tap</h1>
         <p>Endless mode — miss only when the circle falls off the bottom.</p>
-        <p>Tapping too early does nothing, but each tap has a short cooldown.</p>
+        <p>Each lane has its own short cooldown after a tap.</p>
         <button id="startButton">Start</button>
         <div class="hint">Mobile: tap a lane<br>Desktop: click or press A / S / D</div>
     </div>
@@ -178,12 +178,12 @@
 
     let currentCircle = null;
 
-    // Tap cooldown (seconds)
+    // Per-lane tap cooldown (seconds)
     const TAP_COOLDOWN = 0.5;
-    let tapCooldownUntil = 0;
+    let laneCooldownUntil = [0, 0, 0]; // in seconds (using performance.now()/1000)
 
     function speedCurve(score) {
-        // aggressive ramp + small jitter
+        // Aggressive ramp + small jitter
         return 260 + Math.pow(score, 1.2) * 25 + (Math.random() - 0.5) * 40;
     }
 
@@ -207,7 +207,7 @@
         initAudio();
         score = 0;
         misses = 0;
-        tapCooldownUntil = 0;
+        laneCooldownUntil = [0, 0, 0];
         hudScore.textContent = score;
         hudMiss.textContent = misses;
 
@@ -226,7 +226,7 @@
     }
 
     function registerMiss() {
-        // Only called when circle falls off the bottom
+        // Only when circle falls off screen
         misses++;
         hudMiss.textContent = misses;
         missSound();
@@ -236,17 +236,20 @@
     function handleLaneTap(lane) {
         if (!running || !currentCircle) return;
 
-        const now = performance.now() / 1000;
-        if (now < tapCooldownUntil) {
-            // still on cooldown, ignore tap completely
+        const nowSec = performance.now() / 1000;
+
+        // Check lane-specific cooldown
+        if (nowSec < laneCooldownUntil[lane]) {
+            // Lane still on cooldown, ignore
             return;
         }
-        // start new cooldown
-        tapCooldownUntil = now + TAP_COOLDOWN;
 
-        // Only a hit if: correct lane AND within zone.
+        // Start cooldown for this lane
+        laneCooldownUntil[lane] = nowSec + TAP_COOLDOWN;
+
+        // Only a hit if correct lane AND within zone
         if (lane !== currentCircle.lane) {
-            // wrong lane: no miss, no despawn, just cooldown
+            // Wrong lane: early tap, no penalty other than cooldown on this lane
             return;
         }
 
@@ -255,11 +258,9 @@
 
         if (currentCircle.y + circleRadius >= top &&
             currentCircle.y - circleRadius <= bottom) {
-            // valid hit
             registerHit();
         }
-        // else: tapped too early/late in the correct lane, but no penalty
-        // circle keeps falling
+        // If not in window: early/late tap in correct lane = no miss, circle keeps falling
     }
 
     function handleClick(event) {
@@ -308,7 +309,6 @@
 
         if (currentCircle) {
             currentCircle.y += currentCircle.vy * dt;
-            // Miss only when circle falls off bottom
             if (currentCircle.y - circleRadius > height) {
                 registerMiss();
             }
@@ -345,10 +345,28 @@
         ctx.fillStyle='rgba(255,255,255,0.12)';
         ctx.fillRect(0,height-18,width,18);
 
-        // Bottom lane boxes
-        ctx.strokeStyle='rgba(255,255,255,0.4)';
+        // Bottom lane boxes (with cooldown glow)
+        const nowSec = performance.now() / 1000;
         for (let i=0;i<lanes;i++){
-            ctx.strokeRect(i*laneWidth()+4, height-24, laneWidth()-8, 20);
+            const x0 = i * laneWidth() + 4;
+            const w = laneWidth() - 8;
+            const y0 = height - 24;
+            const h = 20;
+
+            const remaining = laneCooldownUntil[i] - nowSec;
+            if (remaining > 0) {
+                // Cooldown active: red glow
+                ctx.fillStyle = 'rgba(244, 67, 54, 0.55)';
+                ctx.fillRect(x0, y0, w, h);
+                ctx.strokeStyle = 'rgba(244, 67, 54, 0.9)';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(x0, y0, w, h);
+            } else {
+                // Normal lane
+                ctx.strokeStyle='rgba(255,255,255,0.4)';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(x0, y0, w, h);
+            }
         }
 
         // Circle
