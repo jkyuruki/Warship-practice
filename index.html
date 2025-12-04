@@ -111,7 +111,7 @@
         <p>30-second run. Miss only when circles fall off the bottom.</p>
         <p>5 normal hits in a row spawns a faster golden circle with the next one.</p>
         <button id="startButton">Start</button>
-        <div class="hint">Mobile: tap a lane • Desktop: click or press A / S / D</div>
+        <div class="hint">Mobile: release in the lane • Desktop: click or press A / S / D</div>
     </div>
 
     <div id="gameOverScreen" style="display:none;">
@@ -175,6 +175,8 @@
 
     /* --- Game State --- */
     const GAME_DURATION = 30; // seconds
+    const TAP_COOLDOWN  = 0.5; // seconds per lane
+    const SPAWN_DELAY   = 0.8; // seconds between normal circles
 
     let running = false;
     let score = 0;
@@ -196,17 +198,20 @@
     let normalStreak = 0;
     let goldenPending = false;
 
-    // Per-lane cooldown and hit flash
-    const TAP_COOLDOWN = 0.5;
-    let laneCooldownUntil = [0, 0, 0];   // seconds
-    let laneHitFlashUntil = [0, 0, 0];   // seconds (green flash)
+    // Per-lane cooldown + hit flash + cooldown visibility
+    let laneCooldownUntil       = [0, 0, 0]; // logical cooldown end time
+    let laneCooldownVisibleUntil= [0, 0, 0]; // red shown only until this time
+    let laneHitFlashUntil       = [0, 0, 0]; // green flash time
+
+    // Next normal spawn timing
+    let nextNormalSpawnTime = null; // in seconds
 
     // Timer bookkeeping
     let lastTime = 0;
 
     function speedCurve(score) {
-        // Aggressive speed ramp + small jitter
-        return 260 + Math.pow(score, 1.2) * 25 + (Math.random() - 0.5) * 40;
+        // Slightly faster starting speed + aggressive ramp + jitter
+        return 300 + Math.pow(score, 1.2) * 25 + (Math.random() - 0.5) * 40;
     }
 
     function spawnNormalCircle() {
@@ -227,7 +232,7 @@
         };
         circles.push(circle);
 
-        // Spawn golden if pending
+        // If a special golden is pending, spawn it now in another lane
         if (goldenPending) {
             spawnGoldenCircle(speed, lane);
             goldenPending = false;
@@ -235,14 +240,12 @@
     }
 
     function spawnGoldenCircle(normalSpeed, normalLane) {
-        // Pick a lane different from the normal one
         const candidates = [];
         for (let i = 0; i < lanes; i++) {
             if (i !== normalLane) candidates.push(i);
         }
         const lane = candidates[Math.floor(Math.random() * candidates.length)];
-
-        const speed = normalSpeed * 1.15; // 15% faster than the normal circle
+        const speed = normalSpeed * 1.15; // 15% faster than the linked normal
 
         const circle = {
             lane,
@@ -261,27 +264,32 @@
         misses = 0;
         normalStreak = 0;
         goldenPending = false;
-        laneCooldownUntil = [0, 0, 0];
-        laneHitFlashUntil = [0, 0, 0];
+        laneCooldownUntil        = [0, 0, 0];
+        laneCooldownVisibleUntil = [0, 0, 0];
+        laneHitFlashUntil        = [0, 0, 0];
         circles = [];
         lastLane = -1;
+        nextNormalSpawnTime = null;
 
         hudScore.textContent = score;
-        hudMiss.textContent = misses + " | 30s game";
+        hudMiss.textContent  = misses + " | 30s game";
 
-        startScreen.style.display = 'none';
+        startScreen.style.display    = 'none';
         gameOverScreen.style.display = 'none';
 
         gameStartTime = performance.now() / 1000;
         lastTime = performance.now();
+
+        // First normal circle appears immediately
         spawnNormalCircle();
+
         requestAnimationFrame(loop);
     }
 
     function endGame() {
         running = false;
-        finalScoreEl.textContent = score;
-        finalMissesEl.textContent = misses;
+        finalScoreEl.textContent   = score;
+        finalMissesEl.textContent  = misses;
         gameOverScreen.style.display = 'flex';
     }
 
@@ -299,13 +307,20 @@
         if (idx !== -1) circles.splice(idx, 1);
     }
 
+    function scheduleNextNormal(nowSec) {
+        nextNormalSpawnTime = nowSec + SPAWN_DELAY;
+    }
+
     function registerHit(circle, lane, nowSec) {
         score++;
         hudScore.textContent = score;
         hitSound();
 
-        // Green flash
+        // Green flash: visually overrides any red
         laneHitFlashUntil[lane] = nowSec + 0.15;
+
+        // This hit's cooldown should NOT show red at all
+        laneCooldownVisibleUntil[lane] = 0;
 
         // Streak only cares about normal circles
         if (!circle.isGolden) {
@@ -318,9 +333,9 @@
 
         removeCircle(circle);
 
-        // Always maintain a normal circle stream:
+        // Normal circle: delay before next normal spawn
         if (!circle.isGolden) {
-            spawnNormalCircle();
+            scheduleNextNormal(nowSec);
         }
     }
 
@@ -329,16 +344,16 @@
         hudMiss.textContent = misses + " | 30s game";
         missSound();
 
-        // Streak resets only when missing a normal circle
+        // Streak resets only for missed normal circles
         if (!circle.isGolden) {
             normalStreak = 0;
         }
 
         removeCircle(circle);
 
-        // If we missed a normal circle, spawn another normal immediately
+        // If we missed a normal circle, delay next normal spawn
         if (!circle.isGolden) {
-            spawnNormalCircle();
+            scheduleNextNormal(nowSec);
         }
     }
 
@@ -347,35 +362,39 @@
 
         const nowSec = performance.now() / 1000;
 
-        // Cooldown gate: if the lane is cooling, NOTHING happens
+        // 1) Cooldown gate: if lane cooling, nothing happens
         if (nowSec < laneCooldownUntil[lane]) {
             return;
         }
 
-        // Start cooldown for this lane on any tap (regardless of hit or miss)
+        // 2) Apply cooldown for this attempt
         laneCooldownUntil[lane] = nowSec + TAP_COOLDOWN;
+        // By default, this cooldown is visually red; if it turns into a hit,
+        // we'll cancel that red visibility in registerHit().
+        laneCooldownVisibleUntil[lane] = laneCooldownUntil[lane];
 
-        // Check if there's a hittable circle in this lane
+        // 3) Check for hittable circle in this lane
         let hitCircle = null;
         for (let i = 0; i < circles.length; i++) {
             const c = circles[i];
             if (c.lane !== lane) continue;
             if (isCircleInHitWindow(c)) {
                 hitCircle = c;
-                break; // at most one per lane by design
+                break; // at most one per lane
             }
         }
 
         if (hitCircle) {
-            // Hit only happens because lane was NOT on cooldown
             registerHit(hitCircle, lane, nowSec);
-            // Cooldown is already active; visual shows green first, then red.
         }
-        // If no hittable circle: just an early/late tap, cooldown still applies.
+        // If there was no hittable circle, this was an early/late tap:
+        // cooldown (and red) still applies, but no miss and circles keep falling.
     }
 
     /* --- Input --- */
-    function handleClick(event) {
+
+    // Mouse: score on mouseup (so it behaves similar to release on mobile)
+    function handleMouseUp(event) {
         initAudio();
         const rect = canvas.getBoundingClientRect();
         const x = (event.clientX - rect.left) * (width / rect.width);
@@ -386,7 +405,8 @@
         }
     }
 
-    function handleTouch(event) {
+    // Touch: score on touchend; supports both quick taps and hold+release
+    function handleTouchEnd(event) {
         initAudio();
         const t = event.changedTouches[0];
         const rect = canvas.getBoundingClientRect();
@@ -407,8 +427,8 @@
         if (event.key === 'd' || event.key === 'D') handleLaneTap(2);
     }
 
-    canvas.addEventListener('mousedown', handleClick);
-    canvas.addEventListener('touchstart', handleTouch, { passive:false });
+    canvas.addEventListener('mouseup', handleMouseUp);
+    canvas.addEventListener('touchend', handleTouchEnd, { passive:false });
     window.addEventListener('keydown', handleKey);
     startButton.addEventListener('click', startGame);
     restartButton.addEventListener('click', startGame);
@@ -436,7 +456,7 @@
     }
 
     function update(dt, nowSec) {
-        // Move circles & detect misses
+        // Move circles & detect misses (falling off bottom)
         for (let i = circles.length - 1; i >= 0; i--) {
             const c = circles[i];
             c.y += c.vy * dt;
@@ -446,10 +466,11 @@
             }
         }
 
-        // Safety: always ensure at least one normal circle exists
+        // Spawn next normal circle after delay, if needed
         const hasNormal = circles.some(c => !c.isGolden);
-        if (!hasNormal && running) {
+        if (!hasNormal && nextNormalSpawnTime !== null && nowSec >= nextNormalSpawnTime && running) {
             spawnNormalCircle();
+            nextNormalSpawnTime = null;
         }
     }
 
@@ -478,7 +499,7 @@
         ctx.fillStyle = 'rgba(255,255,255,0.04)';
         ctx.fillRect(0, zoneTop(), width, zoneHeight);
 
-        // Per-lane hit zone boxes (full box lights up)
+        // Per-lane hit zone boxes
         for (let lane = 0; lane < lanes; lane++) {
             const x0 = lane * laneWidth() + 4;
             const y0 = zoneTop() + 4;
@@ -492,8 +513,8 @@
                 ctx.strokeStyle = 'rgba(76,175,80,1.0)';
                 ctx.lineWidth = 3;
                 ctx.strokeRect(x0, y0, w, h);
-            } else if (nowSec < laneCooldownUntil[lane]) {
-                // Red cooldown
+            } else if (nowSec < laneCooldownVisibleUntil[lane]) {
+                // Red cooldown (only for non-hit attempts)
                 ctx.fillStyle = 'rgba(244, 67, 54, 0.65)';
                 ctx.fillRect(x0, y0, w, h);
                 ctx.strokeStyle = 'rgba(244, 67, 54, 1.0)';
