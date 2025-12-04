@@ -215,7 +215,7 @@
         const t = elapsed / GAME_DURATION; // 0 → 1 over 30s
 
         // Base ramps from ~360 px/s to ~780+ px/s over the game
-        const base = 360 + 420 * Math.pow(t, 1.6);
+        const base = 380 + 800 * Math.pow(t, 2.1);
 
         // Small skill-based bump (good players get a bit more speed)
         const skillTerm = Math.min(score, 25) * 6; // up to +150
